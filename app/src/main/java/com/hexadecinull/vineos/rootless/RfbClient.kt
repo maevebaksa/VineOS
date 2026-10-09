@@ -7,6 +7,7 @@ import android.graphics.Paint
 import android.graphics.Rect
 import android.util.Log
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.Surface
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
@@ -21,11 +22,11 @@ import kotlin.math.roundToInt
 /**
  * Tiny RFB 3.8 client used by the rootless QEMU backend.
  *
- * QEMU exposes its virtio-gpu framebuffer over a loopback-only VNC socket.  Keeping
+ * QEMU exposes its virtio-gpu framebuffer over a loopback-only VNC socket. Keeping
  * the RFB client in-process lets VineOS continue to render into the existing
  * SurfaceView and means no external VNC application is required.
  *
- * We deliberately request only the mandatory RAW encoding.  It costs more CPU than
+ * We deliberately request only the mandatory RAW encoding. It costs more CPU than
  * Tight/ZRLE but is deterministic and keeps the first rootless implementation small.
  */
 class RfbClient(
@@ -84,17 +85,21 @@ class RfbClient(
 
         val mapped = mapSurfaceToGuest(hostX, hostY, fw, fh)
         when (action) {
-            0 -> pointerDown = true
-            2 -> pointerDown = false
+            MotionEvent.ACTION_DOWN -> pointerDown = true
+            MotionEvent.ACTION_UP,
+            MotionEvent.ACTION_CANCEL,
+            -> pointerDown = false
         }
         sendPointerEvent(if (pointerDown) 1 else 0, mapped.first, mapped.second)
     }
 
     fun sendAndroidKey(keyCode: Int, down: Boolean) {
         val keysym = when (keyCode) {
-            KeyEvent.KEYCODE_BACK -> 0xff1b // Escape; Android Generic.kl maps this as Back on VM keyboards
-            KeyEvent.KEYCODE_HOME -> 0xff50
-            KeyEvent.KEYCODE_APP_SWITCH -> 0xffc8 // F11, best-effort until QMP/ADB key injection is added
+            // XF86 Back/HomePage map more naturally to Android's navigation keys
+            // than desktop Escape/Home when QEMU exposes a USB keyboard.
+            KeyEvent.KEYCODE_BACK -> 0x1008ff26
+            KeyEvent.KEYCODE_HOME -> 0x1008ff18
+            KeyEvent.KEYCODE_APP_SWITCH -> 0xffc8 // F11, best-effort until direct guest key injection is added
             KeyEvent.KEYCODE_ENTER -> 0xff0d
             KeyEvent.KEYCODE_DEL -> 0xff08
             KeyEvent.KEYCODE_DPAD_UP -> 0xff52
