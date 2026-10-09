@@ -1,5 +1,6 @@
 package com.hexadecinull.vineos.ui.viewmodel
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.hexadecinull.vineos.data.models.ROMImage
@@ -8,9 +9,10 @@ import com.hexadecinull.vineos.data.models.VMStatus
 import com.hexadecinull.vineos.data.repository.AppPreferences
 import com.hexadecinull.vineos.data.repository.InstanceRepository
 import com.hexadecinull.vineos.data.repository.ROMRepository
-import com.hexadecinull.vineos.native.VineRuntime
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
+import java.util.UUID
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -23,11 +25,8 @@ import kotlinx.coroutines.launch
 
 sealed class CreateInstanceState {
     data object Idle : CreateInstanceState()
-
     data object Creating : CreateInstanceState()
-
     data class Success(val instanceId: String) : CreateInstanceState()
-
     data class Error(val message: String) : CreateInstanceState()
 }
 
@@ -36,6 +35,7 @@ class CreateInstanceViewModel @Inject constructor(
     private val instanceRepo: InstanceRepository,
     private val romRepo: ROMRepository,
     private val prefs: AppPreferences,
+    @ApplicationContext private val context: Context,
 ) : ViewModel() {
     private val stateFlow = MutableStateFlow<CreateInstanceState>(CreateInstanceState.Idle)
     val state: StateFlow<CreateInstanceState> = stateFlow.asStateFlow()
@@ -67,9 +67,7 @@ class CreateInstanceViewModel @Inject constructor(
 
     fun loadRom(romId: String) {
         romFlow.value = romRepo.getRom(romId)
-        if (instanceName.value.isBlank()) {
-            instanceName.value = romFlow.value?.displayName.orEmpty()
-        }
+        if (instanceName.value.isBlank()) instanceName.value = romFlow.value?.displayName.orEmpty()
     }
 
     fun createInstance() {
@@ -84,26 +82,25 @@ class CreateInstanceViewModel @Inject constructor(
             val cpuCores = selectedCpuCores.value
             val isRooted = allowRootInstances.value && selectedRoot.value
 
-            val instancePath = VineRuntime.createInstance(
-                instanceId = "",
-                romImagePath = selectedRom.localPath ?: "",
-                storageMb = storage,
-            )
-
-            if (instancePath == null) {
+            // Generate a real per-instance ID here. The old native path was called with
+            // an empty ID, which collapsed every instance onto filesDir/instances/.
+            // Rootless QEMU needs no privileged setup at creation time: it only needs
+            // an app-private directory for its qcow2 overlays.
+            val instanceId = UUID.randomUUID().toString()
+            val instanceDir = File(context.filesDir, "instances/$instanceId")
+            if (!instanceDir.mkdirs() && !instanceDir.isDirectory) {
                 stateFlow.value = CreateInstanceState.Error(
                     "Failed to create instance storage. Check available disk space.",
                 )
                 return@launch
             }
 
-            val instanceId = File(instancePath).name
             val instance = VMInstance(
                 id = instanceId,
                 name = name,
                 romId = selectedRom.id,
                 romVersion = selectedRom.androidVersion,
-                storagePath = instancePath,
+                storagePath = instanceDir.absolutePath,
                 status = VMStatus.STOPPED,
                 ramMb = ram,
                 cpuCores = cpuCores,
