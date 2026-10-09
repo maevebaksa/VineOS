@@ -3,7 +3,6 @@ package com.hexadecinull.vineos.rootless
 import android.content.Context
 import android.os.StatFs
 import android.util.Log
-import android.view.KeyEvent
 import android.view.Surface
 import java.io.BufferedInputStream
 import java.io.File
@@ -24,9 +23,9 @@ import java.util.zip.ZipInputStream
  * sandbox without CAP_SYS_ADMIN, root, Shizuku, mount(), mknod(), or binfmt_misc.
  *
  * The pinned LineageOS virtio image is multi-arch: arm64-v8a primary userspace plus
- * armeabi-v7a/armeabi secondary userspace. QEMU emulates a Cortex-A53, including
- * AArch32 EL0, so an arm64-only physical phone can execute 32-bit ARM apps inside
- * the guest.
+ * armeabi-v7a/armeabi secondary userspace. QEMU system-emulates an ARM CPU with
+ * AArch32 support, so an arm64-only physical phone can execute 32-bit ARM apps
+ * inside the guest.
  */
 class RootlessQemuBackend(private val context: Context) {
     enum class Status { STOPPED, BOOTING, RUNNING, ERROR }
@@ -86,8 +85,8 @@ class RootlessQemuBackend(private val context: Context) {
             if (!vdb.exists()) createOverlay(vdb, baseVdb)
             if (!vars.exists()) baseEfiVars.copyTo(vars, overwrite = false)
 
-            val vncPort = findFreePort()
-            val adbPort = findFreePort()
+            val vncPort = findFreeVncPort()
+            val adbPort = findEphemeralPort(setOf(vncPort))
             val vncDisplay = vncPort - 5900
             if (vncDisplay < 0) throw IllegalStateException("Unable to allocate a VNC display port")
 
@@ -316,7 +315,10 @@ class RootlessQemuBackend(private val context: Context) {
     ): List<String> = buildList {
         add(qemu.absolutePath)
         addAll(listOf("-machine", "virt,gic-version=3,highmem=off"))
-        addAll(listOf("-cpu", "cortex-a53"))
+        // Match the LineageOS virtio project's documented TCG configuration. The
+        // max CPU model includes the AArch32 execution state needed by the guest's
+        // secondary armeabi-v7a userspace.
+        addAll(listOf("-cpu", "max,pauth-impdef=on"))
         addAll(listOf("-accel", "tcg,thread=multi"))
         addAll(listOf("-smp", cpuCores.toString()))
         addAll(listOf("-m", ramMb.toString()))
@@ -329,6 +331,7 @@ class RootlessQemuBackend(private val context: Context) {
         addAll(listOf("-device", "virtio-blk-pci,drive=vdb,bootindex=1"))
 
         addAll(listOf("-device", "virtio-gpu-pci"))
+        addAll(listOf("-device", "virtio-serial"))
         addAll(listOf("-vnc", "127.0.0.1:$vncDisplay"))
         addAll(listOf("-device", "qemu-xhci,id=usb-bus"))
         addAll(listOf("-device", "usb-tablet,bus=usb-bus.0"))
@@ -342,15 +345,25 @@ class RootlessQemuBackend(private val context: Context) {
         add("-no-reboot")
     }
 
-    private fun findFreePort(): Int {
-        // VNC uses 5900 + display number, so constrain to that range.
+    private fun findFreeVncPort(): Int {
+        // QEMU's -vnc :N convention binds TCP 5900 + N.
         for (display in 20..99) {
             val port = 5900 + display
             try {
                 ServerSocket(port, 1, java.net.InetAddress.getByName("127.0.0.1")).use { return port }
             } catch (_: Throwable) { }
         }
-        ServerSocket(0).use { return it.localPort }
+        throw IllegalStateException("No free loopback VNC port in 5920..5999")
+    }
+
+    private fun findEphemeralPort(excluded: Set<Int> = emptySet()): Int {
+        repeat(16) {
+            ServerSocket(0, 1, java.net.InetAddress.getByName("127.0.0.1")).use { socket ->
+                val port = socket.localPort
+                if (port !in excluded) return port
+            }
+        }
+        throw IllegalStateException("Unable to allocate a unique loopback TCP port")
     }
 
     private fun waitForTcp(port: Int, timeoutMs: Long, process: Process): Boolean {
@@ -370,7 +383,7 @@ class RootlessQemuBackend(private val context: Context) {
 
     private fun download(url: URL, dest: File) {
         dest.parentFile?.mkdirs()
-        var connection = url.openConnection() as HttpURLConnection
+        val connection = url.openConnection() as HttpURLConnection
         connection.instanceFollowRedirects = true
         connection.connectTimeout = 20_000
         connection.readTimeout = 60_000
