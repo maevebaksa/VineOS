@@ -1,0 +1,88 @@
+name: Rootless APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - rootless-backend
+
+concurrency:
+  group: rootless-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-rootless:
+    name: Build rootless debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out VineOS
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          java-version: '17'
+          distribution: temurin
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Fetch pinned rootless QEMU runtime
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/fetch_rootless_qemu.py
+
+      - name: Install AArch64 UEFI firmware
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y qemu-efi-aarch64
+          mkdir -p app/src/main/assets/rootless
+          FW="$(find /usr/share -type f \( -name 'AAVMF_CODE.fd' -o -name 'QEMU_EFI.fd' \) -print -quit)"
+          test -n "$FW"
+          cp "$FW" app/src/main/assets/rootless/efi_code.fd
+          ls -lh app/src/main/assets/rootless/efi_code.fd
+
+      - name: Preserve runtime notices inside APK
+        shell: bash
+        run: |
+          mkdir -p app/src/main/assets/licenses
+          cp third_party/rootless-qemu/POCKR_LICENSE.txt app/src/main/assets/licenses/
+          cp third_party/rootless-qemu/PROVENANCE.txt app/src/main/assets/licenses/ROOTLESS_QEMU_PROVENANCE.txt
+          cp docs/ROOTLESS_RUNTIME_NOTICES.md app/src/main/assets/licenses/
+
+      - name: Grant execute permission for Gradle wrapper
+        run: chmod +x gradlew
+
+      - name: Build rootless debug APK
+        run: ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Verify APK contains rootless runtime
+        shell: bash
+        run: |
+          set -euxo pipefail
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          test -f "$APK"
+          unzip -l "$APK" | tee /tmp/apk-files.txt
+          grep -q 'lib/arm64-v8a/libqemu.so' /tmp/apk-files.txt
+          grep -q 'lib/arm64-v8a/libqemu_img.so' /tmp/apk-files.txt
+          grep -q 'assets/rootless/efi_code.fd' /tmp/apk-files.txt
+          sha256sum "$APK" | tee app/build/outputs/apk/debug/app-debug.apk.sha256
+
+      - name: Upload rootless APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: VineOS-rootless-debug-${{ github.sha }}
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            app/build/outputs/apk/debug/app-debug.apk.sha256
+            third_party/rootless-qemu/SHA256SUMS
+            docs/ROOTLESS_RUNTIME_NOTICES.md
+          retention-days: 14
