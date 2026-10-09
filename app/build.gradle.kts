@@ -111,6 +111,12 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+        // Rootless QEMU is packaged as executable ELF files under jniLibs. They must
+        // be extracted to applicationInfo.nativeLibraryDir; ProcessBuilder cannot
+        // execute a library that remains compressed inside the APK.
+        jniLibs {
+            useLegacyPackaging = true
+        }
     }
 }
 
