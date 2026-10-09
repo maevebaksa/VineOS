@@ -29,7 +29,11 @@ class ROMRepository @Inject constructor(@ApplicationContext private val context:
     private val localRomsFile = File(romsDir, "local_roms.json")
     private val json = Json { ignoreUnknownKeys = true }
 
-    private val _manifestRoms = MutableStateFlow<List<ROMImage>>(emptyList())
+    // The rootless branch always has one guest that is provisioned directly by
+    // RootlessQemuBackend. It is marked READY because no legacy .vrom download is
+    // required before creating an instance; the pinned VM image is fetched and
+    // checksum-verified automatically on first start.
+    private val _manifestRoms = MutableStateFlow<List<ROMImage>>(listOf(ROOTLESS_MULTIARCH_ROM))
     private val _localRoms = MutableStateFlow(loadLocalRoms())
     val roms: Flow<List<ROMImage>> = combine(_manifestRoms, _localRoms) { manifest, local -> manifest + local }
 
@@ -56,12 +60,20 @@ class ROMRepository @Inject constructor(@ApplicationContext private val context:
                     },
                 )
             }
-            _manifestRoms.value = enriched
-            enriched
+            _manifestRoms.value = listOf(ROOTLESS_MULTIARCH_ROM) + enriched.filterNot { it.id == ROOTLESS_ROM_ID }
+            _manifestRoms.value
+        }.onFailure {
+            // A manifest outage must not hide the built-in rootless guest.
+            _manifestRoms.value = listOf(ROOTLESS_MULTIARCH_ROM)
         }
     }
 
     suspend fun download(rom: ROMImage, onProgress: (DownloadProgress) -> Unit): Result<File> = withContext(Dispatchers.IO) {
+        if (rom.id == ROOTLESS_ROM_ID) {
+            return@withContext Result.failure(
+                IllegalStateException("The rootless guest is provisioned automatically when an instance starts."),
+            )
+        }
         runCatching {
             val dest = File(romsDir, "${rom.id}.vrom")
             updateProgress(rom.id, 0L, rom.sizeBytes, ROMDownloadState.DOWNLOADING)
@@ -102,6 +114,7 @@ class ROMRepository @Inject constructor(@ApplicationContext private val context:
     }
 
     suspend fun delete(rom: ROMImage) = withContext(Dispatchers.IO) {
+        if (rom.id == ROOTLESS_ROM_ID) return@withContext
         if (rom.isLocal) {
             rom.localPath?.let { File(it).delete() }
             _localRoms.value = _localRoms.value.filterNot { it.id == rom.id }
@@ -170,6 +183,7 @@ class ROMRepository @Inject constructor(@ApplicationContext private val context:
     }
 
     fun getROMFile(romId: String): File? {
+        if (romId == ROOTLESS_ROM_ID) return null
         val f = File(romsDir, "$romId.vrom")
         return if (f.exists()) f else null
     }
@@ -197,7 +211,7 @@ class ROMRepository @Inject constructor(@ApplicationContext private val context:
 
     private fun refreshROM(romId: String, localFile: File?) {
         _manifestRoms.value = _manifestRoms.value.map { rom ->
-            if (rom.id == romId) {
+            if (rom.id == romId && rom.id != ROOTLESS_ROM_ID) {
                 rom.copy(
                     localPath = localFile?.absolutePath,
                     isDownloaded = localFile != null,
@@ -220,6 +234,24 @@ class ROMRepository @Inject constructor(@ApplicationContext private val context:
     )
 
     companion object {
+        const val ROOTLESS_ROM_ID = "rootless-lineage-multiarch"
+
+        val ROOTLESS_MULTIARCH_ROM = ROMImage(
+            id = ROOTLESS_ROM_ID,
+            displayName = "Rootless Android (32-bit compatible)",
+            androidVersion = "16 / LineageOS 23.2",
+            apiLevel = 36,
+            description = "Rootless QEMU guest for arm64-only phones. Includes armeabi-v7a/armeabi secondary ABI support for legacy 32-bit ARM apps.",
+            downloadUrl = "",
+            sha256 = "ec1ee6d630248060d531b13b3f3e607288d1a93a21f103522ef6bd342c878394",
+            sizeBytes = 1_124_564_306L,
+            supportedAbis = listOf("arm64-v8a", "armeabi-v7a", "armeabi"),
+            has32BitSupport = true,
+            releaseDate = "2026-07-08",
+            isDownloaded = true,
+            downloadState = ROMDownloadState.READY,
+        )
+
         private const val MANIFEST_URL = "https://vineos.hexadecinull.dpdns.org/roms/manifest.json"
         private const val BUFFER_SIZE = 64 * 1024
     }
