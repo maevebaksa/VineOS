@@ -307,14 +307,16 @@ class RfbClient(
         return gx to gy
     }
 
-    private fun sendPointerEvent(mask: Int, x: Int, y: Int) = synchronized(writeLock) {
-        val out = output ?: return
-        runCatching {
-            out.writeByte(5)
-            out.writeByte(mask)
-            out.writeShort(x)
-            out.writeShort(y)
-            out.flush()
+    private fun sendPointerEvent(mask: Int, x: Int, y: Int) {
+        synchronized(writeLock) {
+            val out = output ?: return@synchronized
+            runCatching {
+                out.writeByte(5)
+                out.writeByte(mask)
+                out.writeShort(x)
+                out.writeShort(y)
+                out.flush()
+            }
         }
     }
 
