@@ -71,8 +71,11 @@ android {
             }
         }
         debug {
-            applicationIdSuffix = ".debug"
-            versionNameSuffix = "-debug"
+            // Rootless test builds must never collide with upstream VineOS debug
+            // installs, which use com.hexadecinull.vineos.debug and can be signed
+            // with a different debug key. A distinct package lets both apps coexist.
+            applicationIdSuffix = ".rootless"
+            versionNameSuffix = "-rootless"
             isDebuggable = true
         }
     }
