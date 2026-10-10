@@ -33,6 +33,15 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
 
+      # A clean GitHub runner otherwise creates a new Android debug certificate on
+      # each build. Persist the rootless debug keystore so later APKs can update an
+      # installed rootless build instead of failing with a signature mismatch.
+      - name: Restore stable rootless debug signing key
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: vineos-rootless-debug-keystore-v1
+
       - name: Fetch pinned rootless QEMU runtime
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -64,16 +73,23 @@ jobs:
       - name: Build rootless debug APK
         run: ./gradlew :app:assembleDebug --stacktrace
 
-      - name: Verify APK contains rootless runtime
+      - name: Verify APK install metadata and rootless runtime
         shell: bash
         run: |
           set -euxo pipefail
           APK=app/build/outputs/apk/debug/app-debug.apk
           test -f "$APK"
+
           unzip -l "$APK" | tee /tmp/apk-files.txt
           grep -q 'lib/arm64-v8a/libqemu.so' /tmp/apk-files.txt
           grep -q 'lib/arm64-v8a/libqemu_img.so' /tmp/apk-files.txt
           grep -q 'assets/rootless/efi_code.fd' /tmp/apk-files.txt
+
+          BUILD_TOOLS="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$APK" | tee /tmp/apksigner.txt
+          "$BUILD_TOOLS/aapt" dump badging "$APK" | tee /tmp/badging.txt
+          grep -q "package: name='com.hexadecinull.vineos.rootless'" /tmp/badging.txt
+
           sha256sum "$APK" | tee app/build/outputs/apk/debug/app-debug.apk.sha256
 
       - name: Upload rootless APK
